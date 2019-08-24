@@ -1,0 +1,32 @@
+[
+  {
+    "name": "@",
+    "method": "PUT",
+    "address": "https://api.dev.name.com/v4/domains/example.org/records/12345",
+    "headers": {
+      "Accept": "application/json",
+      "Authorization": "Basic username:password"
+    },
+    "body": {
+      "host": "",
+      "type": "A",
+      "answer": "${ip_address}",
+      "ttl": 300
+    }
+  },
+  {
+    "name": "*",
+    "method": "PUT",
+    "address": "https://api.dev.name.com/v4/domains/example.org/records/12345",
+    "headers": {
+      "Accept": "application/json",
+      "Authorization": "Basic username:password"
+    },
+    "body": {
+      "host": "*",
+      "type": "A",
+      "answer": "${ip_address}",
+      "ttl": 300
+    }
+  }
+]
