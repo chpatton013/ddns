@@ -492,6 +492,7 @@ fn main() {
                 ))
             })
             .map_err(|error| log::error!("{:?}", error))
+            .then(|r| tokio::prelude::future::ok(tokio::prelude::stream::iter_ok::<_, ()>(r)))
             .for_each(|_| Ok(())),
     );
 }
