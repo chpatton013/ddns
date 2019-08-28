@@ -19,6 +19,7 @@ extern crate ddns_common;
 struct Config {
     update_interval: String,
     service_address: String,
+    initial_address: String,
     registrar_request: String,
     update_interval_secs: u64,
     registrar_request_template: String,
@@ -156,6 +157,15 @@ fn get_args() -> clap::ArgMatches<'static> {
                 .help("URL of DDNS service"),
         )
         .arg(
+            clap::Arg::with_name("initial_address")
+                .long("initial_address")
+                .env("DDNS_CLIENT__INITIAL_ADDRESS")
+                .case_insensitive(true)
+                .takes_value(true)
+                .default_value("")
+                .help("Current IP address registered with registrar"),
+        )
+        .arg(
             clap::Arg::with_name("registrar_request")
                 .long("registrar_request")
                 .env("DDNS_CLIENT__REGISTRAR_REQUEST")
@@ -181,6 +191,10 @@ fn make_config_from_args() -> Result<Config, Vec<ConfigError>> {
     match args.value_of("service_address") {
         Some(value) => config.service_address = value.to_owned(),
         None => errors.push(ConfigError::ArgumentError("service_address".to_owned())),
+    }
+    match args.value_of("initial_address") {
+        Some(value) => config.initial_address = value.to_owned(),
+        None => errors.push(ConfigError::ArgumentError("initial_address".to_owned())),
     }
     match args.value_of("registrar_request") {
         Some(value) => config.registrar_request = value.to_owned(),
@@ -450,6 +464,9 @@ fn main() {
     let registrar_request_template = config.registrar_request_template;
 
     let mut ip_address: Option<String> = None;
+    if !config.initial_address.is_empty() {
+        ip_address.replace(config.initial_address.clone());
+    }
 
     tokio::run(
         make_interval_timer_stream(update_interval_secs)
