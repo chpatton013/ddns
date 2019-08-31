@@ -15,6 +15,8 @@ extern crate tokio;
 
 extern crate ddns_common;
 
+use tokio::prelude::{future, stream, Future, Stream};
+
 #[derive(Default, Debug, new)]
 struct Config {
     update_interval: String,
@@ -128,8 +130,9 @@ enum DdnsError {
     ResponseError(ResponseError),
 }
 
-trait DdnsStream<T> = tokio::prelude::Stream<Item = T, Error = DdnsError>;
-trait DdnsFuture<T> = tokio::prelude::Future<Item = T, Error = DdnsError>;
+trait DdnsStream<T> = Stream<Item = T, Error = DdnsError>;
+trait DdnsFuture<T> = Future<Item = T, Error = DdnsError>;
+type DdnsResult<T> = Result<T, DdnsError>;
 
 fn get_args() -> clap::ArgMatches<'static> {
     log::trace!("fn get_args()");
@@ -227,28 +230,19 @@ fn make_config_from_args() -> Result<Config, Vec<ConfigError>> {
 fn render_and_make_registrar_requests(
     registrar_request_template: &str,
     ip_address: String,
-) -> impl DdnsFuture<()> {
+) -> DdnsResult<()> {
     log::trace!(
         "fn render_and_make_registrar_requests(registrar_request_template={:?}, ip_address={:?})",
         registrar_request_template,
         ip_address.as_str(),
     );
-    let render_result = render_registrar_requests(registrar_request_template, ip_address)
-        .map_err(|request_error| DdnsError::RequestError(request_error));
-    match render_result {
-        Ok(rendered_registrar_requests) => {
-            let make_requests_result =
-                make_registrar_requests(rendered_registrar_requests.as_str())
-                    .map_err(|error| DdnsError::RequestError(error));
-            match make_requests_result {
-                Ok(registrar_requests) => {
-                    tokio::prelude::future::Either::A(make_registrar_futures(registrar_requests))
-                }
-                Err(error) => tokio::prelude::future::Either::B(tokio::prelude::future::err(error)),
-            }
-        }
-        Err(error) => tokio::prelude::future::Either::B(tokio::prelude::future::err(error)),
-    }
+    render_registrar_requests(registrar_request_template, ip_address)
+        .map_err(|error| DdnsError::RequestError(error))
+        .and_then(|rendered_registrar_requests| {
+            make_registrar_requests(rendered_registrar_requests.as_str())
+                .map_err(|error| DdnsError::RequestError(error))
+        })
+        .map(make_registrar_futures)
 }
 
 fn render_registrar_requests(request_template: &str, ip_address: String) -> RequestResult<String> {
@@ -298,6 +292,10 @@ fn make_registrar_requests(requests_str: &str) -> RequestResult<Vec<RegistrarReq
         });
     match requests {
         Ok((values, mut errors)) => {
+            // Only report the first error. RequestResult only allows a singular
+            // error to be returned. We could work around this by making a new
+            // plural error type, but there's not much benefit for that amount
+            // of boilerplate.
             if let Some(error) = errors.pop() {
                 Err(error)
             } else {
@@ -336,7 +334,7 @@ fn make_request_future(
         &body,
     );
 
-    tokio::prelude::future::result(make_request(address, method, headers, body))
+    future::result(make_request(address, method, headers, body))
         .map_err(|error| RequestError::HttpError(error))
         .and_then(|request| {
             hyper::Client::new()
@@ -398,15 +396,15 @@ fn decode_service_response(
         })
 }
 
-fn make_registrar_futures(registrar_requests: Vec<RegistrarRequest>) -> impl DdnsFuture<()> {
+fn make_registrar_futures(registrar_requests: Vec<RegistrarRequest>) {
     log::trace!(
         "fn make_registrar_futures(registrar_requests={:?})",
         registrar_requests,
     );
 
-    tokio::prelude::stream::iter_ok(registrar_requests.into_iter())
-        .map(make_registrar_future)
-        .for_each(|_| Ok(()))
+    registrar_requests.into_iter().for_each(|request| {
+        tokio::spawn(make_registrar_future(request).map_err(|error| log::error!("{:?}", error)));
+    });
 }
 
 fn make_registrar_future(request: RegistrarRequest) -> impl DdnsFuture<()> {
@@ -442,12 +440,12 @@ fn process_registrar_response(
             name,
             response
         );
-        tokio::prelude::future::err(DdnsError::ResponseError(ResponseError::StatusError(
+        future::err(DdnsError::ResponseError(ResponseError::StatusError(
             StatusError::new(response.status(), response.into_body()),
         )))
     } else {
         log::debug!("Successfully updated registrar record '{}'", name);
-        tokio::prelude::future::ok(())
+        future::ok(())
     }
 }
 
@@ -476,7 +474,7 @@ fn main() {
 
                 if ip_address.as_ref() == Some(&service_response.ip) {
                     log::debug!("IP Address unchanged from {:?}", ip_address);
-                    return tokio::prelude::future::Either::A(tokio::prelude::future::ok(()));
+                    return future::ok(());
                 }
 
                 log::info!(
@@ -486,13 +484,13 @@ fn main() {
                 );
                 ip_address.replace(service_response.ip.clone());
 
-                tokio::prelude::future::Either::B(render_and_make_registrar_requests(
+                future::result(render_and_make_registrar_requests(
                     registrar_request_template.as_str(),
                     service_response.ip,
                 ))
             })
             .map_err(|error| log::error!("{:?}", error))
-            .then(|r| tokio::prelude::future::ok(tokio::prelude::stream::iter_ok::<_, ()>(r)))
+            .then(|r| future::ok(stream::iter_ok::<_, ()>(r)))
             .for_each(|_| Ok(())),
     );
 }
