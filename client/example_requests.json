@@ -5,7 +5,7 @@
     "address": "https://api.dev.name.com/v4/domains/example.org/records/12345",
     "headers": {
       "Accept": "application/json",
-      "Authorization": "Basic username:password"
+      "Authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ="
     },
     "body": {
       "host": "",
@@ -20,7 +20,7 @@
     "address": "https://api.dev.name.com/v4/domains/example.org/records/12345",
     "headers": {
       "Accept": "application/json",
-      "Authorization": "Basic username:password"
+      "Authorization": "Basic dXNlcm5hbWU6cGFzc3dvcmQ="
     },
     "body": {
       "host": "*",
