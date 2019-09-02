@@ -8,6 +8,7 @@ extern crate clap;
 extern crate envsubst;
 extern crate http;
 extern crate hyper;
+extern crate hyper_tls;
 extern crate log;
 extern crate pretty_env_logger;
 extern crate serde_json;
@@ -106,6 +107,7 @@ enum RequestError {
     FormatError,
     HttpError(http::Error),
     HyperError(hyper::Error),
+    HyperTlsError(hyper_tls::Error),
 }
 
 type RequestResult<T> = Result<T, RequestError>;
@@ -133,6 +135,21 @@ enum DdnsError {
 trait DdnsStream<T> = Stream<Item = T, Error = DdnsError>;
 trait DdnsFuture<T> = Future<Item = T, Error = DdnsError>;
 type DdnsResult<T> = Result<T, DdnsError>;
+
+enum RequestScheme {
+    Http,
+    Https,
+}
+
+fn get_request_scheme(scheme_option: Option<&http::uri::Scheme>) -> RequestScheme {
+    scheme_option.map_or(RequestScheme::Http, |scheme| {
+        if scheme.as_str() == "https" {
+            RequestScheme::Https
+        } else {
+            RequestScheme::Http
+        }
+    })
+}
 
 fn get_args() -> clap::ArgMatches<'static> {
     log::trace!("fn get_args()");
@@ -334,14 +351,36 @@ fn make_request_future(
         &body,
     );
 
-    future::result(make_request(address, method, headers, body))
-        .map_err(|error| RequestError::HttpError(error))
-        .and_then(|request| {
-            hyper::Client::new()
-                .request(request)
-                .map_err(|error| RequestError::HyperError(error))
-        })
-        .map_err(|error| DdnsError::RequestError(error))
+    future::result(
+        make_request(address, method, headers, body)
+            .map_err(|error| RequestError::HttpError(error)),
+    )
+    .and_then(
+        |request| match get_request_scheme(request.uri().scheme_part()) {
+            RequestScheme::Http => {
+                let connector = hyper::client::HttpConnector::new(4);
+                future::Either::A(
+                    hyper::Client::builder()
+                        .build::<_, hyper::Body>(connector)
+                        .request(request)
+                        .map_err(|error| RequestError::HyperError(error)),
+                )
+            }
+            RequestScheme::Https => future::Either::B(
+                future::result(
+                    hyper_tls::HttpsConnector::new(4)
+                        .map_err(|error| RequestError::HyperTlsError(error)),
+                )
+                .and_then(|connector| {
+                    hyper::Client::builder()
+                        .build::<_, hyper::Body>(connector)
+                        .request(request)
+                        .map_err(|error| RequestError::HyperError(error))
+                }),
+            ),
+        },
+    )
+    .map_err(|error| DdnsError::RequestError(error))
 }
 
 fn make_request(
