@@ -114,8 +114,8 @@ type RequestResult<T> = Result<T, RequestError>;
 
 #[derive(Debug, new)]
 struct StatusError {
-    status: hyper::StatusCode,
-    body: hyper::Body,
+    status: u16,
+    body: String,
 }
 
 #[derive(Debug)]
@@ -397,6 +397,19 @@ fn make_request(
     builder.body(body)
 }
 
+fn decode_response(response: hyper::Response<hyper::Body>) -> impl DdnsFuture<bytes::Bytes> {
+    response
+        .into_body()
+        .fold(
+            bytes::Bytes::new(),
+            |mut accumulator, chunk| -> hyper::Result<bytes::Bytes> {
+                accumulator.extend_from_slice(chunk.into_bytes().as_ref());
+                Ok(accumulator)
+            },
+        )
+        .map_err(|error| DdnsError::ResponseError(ResponseError::HyperError(error)))
+}
+
 fn make_service_future(address: &str) -> impl DdnsFuture<ServiceResponse> {
     log::trace!("fn make_service_future(address={:?})", address);
 
@@ -419,20 +432,10 @@ fn decode_service_response(
 ) -> impl DdnsFuture<ServiceResponse> {
     log::trace!("fn decode_service_response(response={:?})", response);
 
-    response
-        .into_body()
-        .fold(
-            bytes::Bytes::new(),
-            |mut accumulator, chunk| -> hyper::Result<bytes::Bytes> {
-                accumulator.extend_from_slice(chunk.into_bytes().as_ref());
-                Ok(accumulator)
-            },
-        )
-        .map_err(|error| DdnsError::ResponseError(ResponseError::HyperError(error)))
-        .and_then(|response_bytes| {
-            serde_json::from_slice(response_bytes.as_ref())
-                .map_err(|error| DdnsError::ResponseError(ResponseError::SerdeJsonError(error)))
-        })
+    decode_response(response).and_then(|response_bytes| {
+        serde_json::from_slice(response_bytes.as_ref())
+            .map_err(|error| DdnsError::ResponseError(ResponseError::SerdeJsonError(error)))
+    })
 }
 
 fn make_registrar_futures(registrar_requests: Vec<RegistrarRequest>) {
@@ -462,6 +465,22 @@ fn make_registrar_future(request: RegistrarRequest) -> impl DdnsFuture<()> {
     .and_then(move |response| process_registrar_response(name.as_str(), response))
 }
 
+fn decode_registrar_response(
+    status_code: u16,
+    response: hyper::Response<hyper::Body>,
+) -> impl DdnsFuture<()> {
+    log::trace!("fn decode_registrar_response(response={:?})", response);
+
+    decode_response(response).and_then(move |response_bytes| {
+        future::err(DdnsError::ResponseError(ResponseError::StatusError(
+            StatusError::new(
+                status_code,
+                String::from_utf8_lossy(response_bytes.as_ref()).to_string(),
+            ),
+        )))
+    })
+}
+
 fn process_registrar_response(
     name: &str,
     response: hyper::Response<hyper::Body>,
@@ -469,22 +488,16 @@ fn process_registrar_response(
     log::trace!(
         "fn process_registrar_response(name={:?}, response={:?})",
         name,
-        response
+        response,
     );
 
     let status_code = response.status().as_u16();
     if status_code < 200 || status_code >= 300 {
-        log::warn!(
-            "Failed to update registrar record '{}': {:?}",
-            name,
-            response
-        );
-        future::err(DdnsError::ResponseError(ResponseError::StatusError(
-            StatusError::new(response.status(), response.into_body()),
-        )))
+        log::warn!("Failed to update registrar record '{}'", name);
+        future::Either::A(decode_registrar_response(status_code, response))
     } else {
         log::debug!("Successfully updated registrar record '{}'", name);
-        future::ok(())
+        future::Either::B(future::ok(()))
     }
 }
 
